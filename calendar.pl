@@ -1,4 +1,4 @@
-:- dynamic distance/3,visited/1,location/2,traveled/2.
+:- dynamic distance/3,visited/1,location/2,traveled/2,roulette/3,solution_data/5.
 :- use_module(library(random)).
 
 link(a,b,30).
@@ -152,6 +152,59 @@ distances([Place,A,B|Solution],Traveled,Distance):-
     SA is Traveled+TravelA,
     NewTraveled is SA+TravelB,
     distances(Solution,NewTraveled,Distance).
+
+distances_mean(TotalDistance,N,Distances,Mean):-
+	findall(Distance,traveled(_,Distance),Distances),
+	length(Distances,N),
+	Mean is TotalDistance/N.
+
+distances_std([],_,N,Sum,Std):-
+	Std is sqrt((Sum/N)).
+distances_std([Distance|Distances],Mean,N,Sum,Std):-
+	NewSum is Sum+(Distance-Mean)**2,
+	distances_std(Distances,Mean,N,NewSum,Std).
+
+solution_heuristic(Run,Solution,Heuristic):-
+	distances(Solution,0,Distance),!,
+	distances_mean(Distance,N,Distances,Mean),
+	distances_std(Distances,Mean,N,0,Std),
+	Heuristic is Distance*Std,
+	retractall(traveled(_,_)),
+	retractall(location(_,_)),
+	atomic_list_concat(Solution,Key),
+	assertz(solution_data(Key,Run,Distance,Mean,Std)).
+
+make_roulette(_,[],_,HS,HS):-!.
+make_roulette(Run,[Solution|Solutions],Index,HeuristicSum,HS):-
+	solution_heuristic(Run,Solution,Heuristic),
+	NewIndex is Index+1,
+	NewHS is HeuristicSum+Heuristic,
+	make_roulette(Run,Solutions,NewIndex,NewHS,HS),
+	Prob is (1-(Heuristic/HS)),
+	assertz(roulette(Index,Heuristic,Prob)).
+
+
+make_population(Max,Max,[]):-!.
+make_population(Actual,Quantity,[Solution|Population]):-
+	NewActual is Actual+1,
+	make_random_solution(Solution),
+	make_population(NewActual,Quantity,Population).
+
+crossover(Population,Population):-!.
+
+history(Generation,Generation,Population):-
+	make_roulette(Generation,Population,0,0,_),!.
+history(Generation,LastGeneration,Population):-
+	NewGeneration is Generation+LastGeneration,
+	make_roulette(Generation,Population,0,0,_),
+	crossover(Population,NewPopulation),
+	history(NewGeneration,LastGeneration,NewPopulation),
+	!.
+
+niflheim:-
+	make_population(1,20,Population),
+	history(0,30,Population).
+
 
 
 
