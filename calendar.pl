@@ -1,4 +1,4 @@
-:- dynamic distance/3,visited/1,location/2,traveled/2,roulette/3,solution_data/5.
+:- dynamic distance/3,visited/1,location/2,traveled/2,roulette/3,solution_data/5,config/3.
 :- use_module(library(random)).
 
 link(a,b,30).
@@ -98,13 +98,17 @@ check_pairs([[A,B|_]|Pairs]):-
     (A==B->write("Error"),nl;true),
     check_pairs(Pairs).
 
-create_match(A,B,Pool,Match):-
-    random_member(Location,Pool),
-    Match=[[A,A,B],[Location,A,B]].
+used_config(L,A,B):-
+	config(L,A,B),!.
+used_config(L,A,B):-
+	config(L,B,A).
+
+create_match(A,B,Match):-
+    Match=[[A,A,B],[B,A,B]].
 
 solution_creator([],_,[]):-!.
 solution_creator([[A,B|_]|Pairs],Pool,Solution):-
-    create_match(A,B,Pool,Match),
+    create_match(A,B,Match),
     solution_creator(Pairs,Pool,Matches),
     append(Match,Matches,Solution).
 
@@ -180,8 +184,14 @@ make_roulette(Run,[Solution|Solutions],Index,HeuristicSum,HS):-
 	NewIndex is Index+1,
 	NewHS is HeuristicSum+Heuristic,
 	make_roulette(Run,Solutions,NewIndex,NewHS,HS),
-	Prob is (1-(Heuristic/HS)),
-	assertz(roulette(Index,Heuristic,Prob)).
+	Prob is ((1-(Heuristic/HS))/2),
+	atomic_list_concat(Solution,Concat),
+	variant_sha1(Concat,Key),
+	(roulette(Key,_,_)->
+	retract(roulette(Key,_,_)),
+	assertz(roulette(Key,Heuristic,Prob));
+	assertz(roulette(Key,Heuristic,Prob))
+	).
 
 
 make_population(Max,Max,[]):-!.
@@ -190,20 +200,127 @@ make_population(Actual,Quantity,[Solution|Population]):-
 	make_random_solution(Solution),
 	make_population(NewActual,Quantity,Population).
 
-crossover(Population,Population):-!.
+select_one(Solutions,Selected):-
+	random_member(S,Solutions),
+	atomic_list_concat(S,Concat),
+	variant_sha1(Concat,Key),
+	roulette(Key,_,Prob),
+	(maybe(Prob)->
+	Selected=S;
+	select_one(Solutions,Selected)
+	).
 
-history(Generation,Generation,Population):-
-	make_roulette(Generation,Population,0,0,_),!.
-history(Generation,LastGeneration,Population):-
-	NewGeneration is Generation+LastGeneration,
-	make_roulette(Generation,Population,0,0,_),
-	crossover(Population,NewPopulation),
-	history(NewGeneration,LastGeneration,NewPopulation),
+get_aleles([],_,_,_,[]):-!.
+get_aleles([Location,A,B|S],L,U,Index,Alele):-
+	NI is Index+1,
+	(between(L,U,Index)->
+	Selected=[Location,A,B],
+	assertz(config(Location,A,B));
+	Selected=[]
+	),
+	get_aleles(S,L,U,NI,Tail),
+	append(Selected,Tail,Alele).
+
+present_alele(Location,A,B):-
+       used_config(Location,A,B).
+
+get_complement_aleles([],[]):-!.
+get_complement_aleles([Loc,A,B|S],ComplementAleles):-
+	(present_alele(Loc,A,B)->
+	Selected=[];
+	Selected=[Loc,A,B]
+	),
+	get_complement_aleles(S,Tail),
+	append(Selected,Tail,ComplementAleles),
 	!.
 
-niflheim:-
-	make_population(1,20,Population),
-	history(0,30,Population).
+cross_genes(S1,S2,Child):-
+	length(S2,N),
+	Matches is N/3,
+	Mid is Matches/2,
+	Upper is Matches-3,
+	random_between(3,Mid,L),
+	SLow is Mid+1,
+	random_between(SLow,Upper,U),
+	get_aleles(S2,L,U,1,Aleles),
+	get_complement_aleles(S1,CAleles),
+	retractall(config(_,_,_)),
+	append(Aleles,CAleles,Child).
+
+mutate(InitialL,InitialA,InitialB,[Location,A,B|Rest],I,I,Location,A,B,[InitialL,InitialA,InitialB|Rest]):-!.
+mutate(InitialL,InitialA,InitialB,[Location,A,B|S],Index,SI,SwapL,SwapA,SwapB,[Location,A,B|Rest]):-
+	NI is Index+1,
+	mutate(InitialL,InitialA,InitialB,S,NI,SI,SwapL,SwapA,SwapB,Rest),
+	!.
+
+mutate_thunk([Location,A,B|S1],Index,SI,[SwapL,SwapA,SwapB|Tail]):-
+	mutate(Location,A,B,S1,Index,SI,SwapL,SwapA,SwapB,Tail).
+
+mutation(S,MutationProb,Mutation):-
+	(maybe(MutationProb)->
+	length(S,N),
+	NF is N/3,
+	random_between(2,NF,R),
+	mutate_thunk(S,1,R,M),
+	mutation(M,MutationProb,Mutation);
+	Mutation=S).
+
+cross(S1,S2,CrossProb,MutationProb,Child1,Child2):-
+	(maybe(CrossProb)->
+	cross_genes(S1,S2,Ch1),
+	cross_genes(S2,S1,Ch2),
+	mutation(Ch1,MutationProb,M1),
+	mutation(Ch2,MutationProb,M2),
+	Child1=M1,
+	Child2=M2;
+	Child1=S1,
+	Child2=S2),
+	!.
+
+crossing(_,Crosses,Crosses,[]):-!.
+crossing(Solutions,Cross,Crosses,[Ch1,Ch2|NewPopulation]):-
+	NewCross is Cross+1,
+	select_one(Solutions,S1),
+	select_one(Solutions,S2),
+	cross(S1,S2,0.7,0.01,Ch1,Ch2),
+	crossing(Solutions,NewCross,Crosses,NewPopulation),
+	!.
+
+crossover(Solutions,NewPopulation):-
+	length(Solutions,N),
+	Crosses is N/2,
+	crossing(Solutions,0,Crosses,NewPopulation).
+
+best_solution([],Best,Best,_):-!.
+best_solution([[Key,Distance,Mean,Std|_]|Solutions],ActualBest,FinalBest,BestSolution):-
+	NextHeuristic is Distance*Std,
+	(NextHeuristic<ActualBest->
+	best_solution(Solutions,NextHeuristic,FinalBest,BS);
+	best_solution(Solutions,ActualBest,FinalBest,BS)
+	),
+	(var(BS)->(FinalBest==NextHeuristic->BestSolution = [Key,Distance,Mean,Std];true);
+	BestSolution=BS).
+
+best_solution_thunk([[Key,Distance,Mean,Std|_]|Solutions],BestSolution):-
+	InitialBest is Distance*Std,
+	best_solution(Solutions,InitialBest,_,BS),
+	(var(BS)->BestSolution=[Key,Distance,Mean,Std];BestSolution=BS).
+
+history(Generation,Generation,Population,BestSolution):-
+	make_roulette(Generation,Population,0,0,_),
+	setof([Key,Distance,Mean,Std],solution_data(Key,Generation,Distance,Mean,Std),Bag),
+	best_solution_thunk(Bag,BestSolution),
+	!.
+history(Generation,LastGeneration,Population,BestSolution):-
+	NewGeneration is Generation+1,
+	make_roulette(Generation,Population,0,0,_),
+	crossover(Population,NewPopulation),
+	history(NewGeneration,LastGeneration,NewPopulation,BestSolution).
+
+niflheim(PopulationSize,Generations,BestSolution):-
+	make_population(0,PopulationSize,Population),
+	history(0,Generations,Population,BestSolution),
+	retractall(config(_,_,_)),retractall(roulette(_,_,_)).
 
 
 
